@@ -1,8 +1,1 @@
 id,name,email,password,offered_courses
-2,Jane Smith,jane@example.com,pass456,CS202
-3,Bob Johnson,bob.faculty@example.com,pass789,CS303,AMS402
-4,Shane,shane@example.com,pass888,EC456
-5,heh,me@example.com,pass66777,EGC123,FS992
-1,burger,burg@example.com,pass333,
-6,Den,who@ex.com,pass890,
-883,,Murphy,murph@gmail.com,pass009,
