@@ -2,6 +2,4 @@ id,name,email,password,active,enrolled_courses
 1,Bob Johnson,bob@example.com,pass789,1,CS101
 2,Alice Brown,alice@example.com,pass012,1,AMS402
 3,Kaun,me@example.com,123,0,
-4,Darsh,darsh.veer@iiitb.ac.in,pass33,1,EGC123,FS992
 5,TA,ta@ex.com,hehe,0,
-6,Hemanth,hemanth.mada@iiitb.ac.in,pass453,1,
