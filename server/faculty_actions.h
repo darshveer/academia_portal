@@ -18,13 +18,6 @@
 #define STUDENT_DB  "../database/students.csv"
 #define FACULTY_DB  "../database/faculty.csv"
 
-// Fix the FILE_ERROR redefinition by using the same value across all files
-#define SUCCESS        0
-#define FAILURE       -1
-#define NOT_FOUND     -2
-#define DUPLICATE_ID  -3
-#define FILE_ERROR    -1  // Changed from -4 to -1 to match other files
-
 // Add forward declaration of unenroll_course from student_actions.h
 int unenroll_course(int student_id, int course_id);
 

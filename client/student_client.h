@@ -9,7 +9,6 @@
 #include "../server/student_actions.h"
 #include "../server/utils.h"
 
-// Use the same buffer size as in client.c
 #define MAX_BUF 1024
 
 /**

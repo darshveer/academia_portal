@@ -20,8 +20,6 @@
 // Use the same MAX_BUF value as in student_client.h to avoid redefinition warning
 #define CLIENT_BUF_SIZE 1024
 
-// Remove the read_line function definition from here
-
 // Update the main function to use system calls
 int main() {
     int sockfd;

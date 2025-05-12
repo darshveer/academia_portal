@@ -9,6 +9,7 @@
 #define FAILURE        -1
 #define FILE_ERROR     -1
 #define USER_NOT_FOUND -2
+#define NOT_FOUND     -2
 #define COURSE_NOT_FOUND -3
 #define DUPLICATE_ID   -3
 #define ALREADY_ENROLLED -4
