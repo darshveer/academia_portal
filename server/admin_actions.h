@@ -313,8 +313,8 @@ static inline int update_user_details(const char *filename, int user_id, int fie
 
             // Construct the updated line
             char updated[MAX_LINE];
-            int w = (fields == 5) ? snprintf(updated, sizeof(updated), "%d,%s,%s,%s,%d,", id, name, email, pass, active)
-                                  : snprintf(updated, sizeof(updated), "%d,%s,%s,%s", id, name, email, pass);
+            int w = (fields == 5) ? snprintf(updated, sizeof(updated), "%d,%s,%s,%s,%d,\n", id, name, email, pass, active)
+                                  : snprintf(updated, sizeof(updated), "%d,%s,%s,%s\n", id, name, email, pass);
 
             // Write the updated line
             pwrite(fd, updated, w, offset);

@@ -2,4 +2,5 @@ id,name,email,password,active,enrolled_courses
 1,Bob Johnson,bob@example.com,pass789,1,CS101
 2,Alice Brown,alice@example.com,pass012,1,AMS402
 3,Kaun,me@example.com,123,0,
-5,TA,ta@ex.com,hehe,0,
+5,ta,ta@ex.com,hehe,0,
+106,Alex,alex@gmail.com,pass222,1,
