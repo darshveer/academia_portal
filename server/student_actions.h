@@ -225,7 +225,7 @@ int list_available_courses(int student_id) {
  * @return int Status code (SUCCESS, ALREADY_ENROLLED, FILE_ERROR, etc).
  */
 static inline int enroll_course(int student_id, int course_id) {
-    // 1) Look up course code & increment enrolled count
+    // 1) Look up course and check if student is already enrolled
     int cf = open(DB_COURSES, O_RDONLY);
     if (cf < 0) return FILE_ERROR;
     
@@ -249,51 +249,93 @@ static inline int enroll_course(int student_id, int course_id) {
     int found_course = 0;
     int cap = 0, enrolled = 0, credits = 0, fid = 0;
     char name_c[128] = "";
-    char students_list[MAX_BUFFER] = "";  // Increased buffer size
-    char updated_courses[MAX_COURSE_BUFFER] = ""; // Increased buffer size
+    char students_raw[MAX_BUFFER] = "";
     ssize_t bytes_read;
 
-    // preserve header
-    if ((bytes_read = read_line(cf, line, sizeof(line))) > 0 && strncmp(line, "id,", 3) == 0) {
-        // Check if the line already ends with a newline
-        if (line[bytes_read-1] == '\n') {
-            strcat(updated_courses, line);
-        } else {
-            strcat(updated_courses, line);
-            strcat(updated_courses, "\n");
-        }
-    } else {
-        lseek(cf, 0, SEEK_SET);
-    }
+    // Skip header
+    read_line(cf, line, sizeof(line));
 
+    // Find the course
     while ((bytes_read = read_line(cf, line, sizeof(line))) > 0) {
-        line[strcspn(line, "\r\n")] = '\0';
-        students_list[0] = '\0';  // Reset for each line
-
         int cid;
-        int fields = sscanf(line,
-            "%d,%63[^,],%127[^,],%d,%d,%d,%d,\"%511[^\"]\"",
-            &cid, course_code, name_c, &cap, &enrolled, &credits, &fid, students_list);
-
-        if (cid == course_id) {
+        if (sscanf(line, "%d", &cid) == 1 && cid == course_id) {
             found_course = 1;
             
-            // Check if already enrolled
-            if (fields == 8 && strlen(students_list)) {
-                char temp_list[MAX_BUFFER]; // Increased buffer size
-                strcpy(temp_list, students_list);
-                char *tok = strtok(temp_list, ",");
-                while (tok) {
-                    if (atoi(tok) == student_id) {
-                        // Release lock
+            // Parse the line manually to handle quoted fields correctly
+            char *token = strtok(line, ",");
+            if (!token) continue;
+            
+            // Get course code
+            token = strtok(NULL, ",");
+            if (token) strncpy(course_code, token, sizeof(course_code) - 1);
+            
+            // Get course name
+            token = strtok(NULL, ",");
+            if (token) strncpy(name_c, token, sizeof(name_c) - 1);
+            
+            // Get capacity
+            token = strtok(NULL, ",");
+            if (token) cap = atoi(token);
+            
+            // Get enrolled count
+            token = strtok(NULL, ",");
+            if (token) enrolled = atoi(token);
+            
+            // Get credits
+            token = strtok(NULL, ",");
+            if (token) credits = atoi(token);
+            
+            // Get faculty ID
+            token = strtok(NULL, ",");
+            if (token) fid = atoi(token);
+            
+            // Get students list - this might contain quotes
+            token = strtok(NULL, "\n");
+            if (token) {
+                // Remove quotes if present
+                char *start = token;
+                while (*start == ' ' || *start == '"') start++;
+                
+                char *end = start + strlen(start) - 1;
+                while (end > start && (*end == ' ' || *end == '"' || *end == '\r' || *end == '\n')) {
+                    *end = '\0';
+                    end--;
+                }
+                
+                strncpy(students_raw, start, sizeof(students_raw) - 1);
+            }
+            
+            // Check if student is already enrolled
+            if (strlen(students_raw) > 0) {
+                char student_id_str[16];
+                snprintf(student_id_str, sizeof(student_id_str), "%d", student_id);
+                
+                char *students_copy = strdup(students_raw);
+                char *student_token = strtok(students_copy, ",");
+                
+                while (student_token) {
+                    // Trim whitespace
+                    while (*student_token == ' ') student_token++;
+                    char *end = student_token + strlen(student_token) - 1;
+                    while (end > student_token && *end == ' ') {
+                        *end = '\0';
+                        end--;
+                    }
+                    
+                    if (strcmp(student_token, student_id_str) == 0) {
+                        free(students_copy);
                         lock.l_type = F_UNLCK;
                         fcntl(cf, F_SETLK, &lock);
                         close(cf);
                         return ALREADY_ENROLLED;
                     }
-                    tok = strtok(NULL, ",");
+                    
+                    student_token = strtok(NULL, ",");
                 }
+                
+                free(students_copy);
             }
+            
             break;
         }
     }
@@ -304,8 +346,8 @@ static inline int enroll_course(int student_id, int course_id) {
     close(cf);
     
     if (!found_course) return COURSE_NOT_FOUND;
-
-    // 2) Check if student exists
+    
+    // 2) Check if student exists and get their enrolled courses
     int sf = open(DB_STUDENTS, O_RDONLY);
     if (sf < 0) return FILE_ERROR;
     
@@ -324,23 +366,82 @@ static inline int enroll_course(int student_id, int course_id) {
     }
 
     int found_student = 0;
-    char student_enrolled[MAX_BUFFER] = ""; // Increased buffer size
+    char student_name[64] = "";
+    char student_email[64] = "";
+    char student_pass[64] = "";
+    int student_active = 0;
+    char student_enrolled[MAX_BUFFER] = "";
+    
+    // Skip header
+    read_line(sf, line, sizeof(line));
     
     while ((bytes_read = read_line(sf, line, sizeof(line))) > 0) {
         int sid;
-        if (sscanf(line, "%d,%*[^,],%*[^,],%*[^,],%*d,%[^\n]", &sid, student_enrolled) >= 1) {
-            if (sid == student_id) {
-                found_student = 1;
-                // Check if already enrolled in this course
-                if (strstr(student_enrolled, course_code)) {
-                    // Release lock
-                    lock.l_type = F_UNLCK;
-                    fcntl(sf, F_SETLK, &lock);
-                    close(sf);
-                    return ALREADY_ENROLLED;
+        if (sscanf(line, "%d", &sid) == 1 && sid == student_id) {
+            found_student = 1;
+            
+            // Parse the line manually
+            char *token = strtok(line, ",");
+            if (!token) continue;
+            
+            // Get student name
+            token = strtok(NULL, ",");
+            if (token) strncpy(student_name, token, sizeof(student_name) - 1);
+            
+            // Get student email
+            token = strtok(NULL, ",");
+            if (token) strncpy(student_email, token, sizeof(student_email) - 1);
+            
+            // Get student password
+            token = strtok(NULL, ",");
+            if (token) strncpy(student_pass, token, sizeof(student_pass) - 1);
+            
+            // Get student active status
+            token = strtok(NULL, ",");
+            if (token) student_active = atoi(token);
+            
+            // Get student enrolled courses
+            token = strtok(NULL, "\n");
+            if (token) {
+                // Remove trailing whitespace and newlines
+                char *end = token + strlen(token) - 1;
+                while (end > token && (*end == ' ' || *end == '\r' || *end == '\n')) {
+                    *end = '\0';
+                    end--;
                 }
-                break;
+                
+                strncpy(student_enrolled, token, sizeof(student_enrolled) - 1);
             }
+            
+            // Check if already enrolled in this course
+            if (strlen(student_enrolled) > 0) {
+                char *enrolled_copy = strdup(student_enrolled);
+                char *course_token = strtok(enrolled_copy, ",");
+                
+                while (course_token) {
+                    // Trim whitespace
+                    while (*course_token == ' ') course_token++;
+                    char *end = course_token + strlen(course_token) - 1;
+                    while (end > course_token && *end == ' ') {
+                        *end = '\0';
+                        end--;
+                    }
+                    
+                    if (strcmp(course_token, course_code) == 0) {
+                        free(enrolled_copy);
+                        lock.l_type = F_UNLCK;
+                        fcntl(sf, F_SETLK, &lock);
+                        close(sf);
+                        return ALREADY_ENROLLED;
+                    }
+                    
+                    course_token = strtok(NULL, ",");
+                }
+                
+                free(enrolled_copy);
+            }
+            
+            break;
         }
     }
     
@@ -351,13 +452,13 @@ static inline int enroll_course(int student_id, int course_id) {
     
     if (!found_student) return USER_NOT_FOUND;
 
-    // 3) Update courses file
-    cf = open(DB_COURSES, O_RDONLY);
+    // 3) Update courses file - add student to course's students list
+    cf = open(DB_COURSES, O_RDWR);
     if (cf < 0) return FILE_ERROR;
     
-    // Acquire shared lock for reading
+    // Acquire exclusive lock for writing
     memset(&lock, 0, sizeof(lock));
-    lock.l_type = F_RDLCK;
+    lock.l_type = F_WRLCK;
     lock.l_whence = SEEK_SET;
     lock.l_start = 0;
     lock.l_len = 0; // Lock the entire file
@@ -369,174 +470,55 @@ static inline int enroll_course(int student_id, int course_id) {
         return FILE_ERROR;
     }
 
-    updated_courses[0] = '\0';
-    if ((bytes_read = read_line(cf, line, sizeof(line))) > 0 && strncmp(line, "id,", 3) == 0) {
-        // Check if the line already ends with a newline
-        if (line[bytes_read-1] == '\n') {
-            strcat(updated_courses, line);
-        } else {
-            strcat(updated_courses, line);
-            strcat(updated_courses, "\n");
-        }
-    } else {
-        lseek(cf, 0, SEEK_SET);
+    char temp_file[] = "../database/courses_temp.csv";
+    FILE *temp = fopen(temp_file, "w");
+    if (!temp) {
+        lock.l_type = F_UNLCK;
+        fcntl(cf, F_SETLK, &lock);
+        close(cf);
+        return FILE_ERROR;
     }
-
-    while ((bytes_read = read_line(cf, line, sizeof(line))) > 0) {
-        line[strcspn(line, "\r\n")] = '\0';
-
+    
+    // Copy header
+    lseek(cf, 0, SEEK_SET);
+    read_line(cf, line, sizeof(line));
+    fprintf(temp, "%s", line);
+    
+    // Copy all lines, updating the course
+    while (read_line(cf, line, sizeof(line)) > 0) {
         int cid;
-        if (sscanf(line, "%d", &cid) == 1) {
-            if (cid == course_id) {
-                char new_students[MAX_BUFFER]; // Increased buffer size
-                if (strlen(students_list) > 0) {
-                    // Use safer snprintf with sufficient buffer size
-                    if (snprintf(new_students, sizeof(new_students), "%s,%d", students_list, student_id) >= (int)sizeof(new_students)) {
-                        // Buffer would overflow, handle error
-                        lock.l_type = F_UNLCK;
-                        fcntl(cf, F_SETLK, &lock);
-                        close(cf);
-                        return FILE_ERROR;
-                    }
-                } else {
-                    if (snprintf(new_students, sizeof(new_students), "%d", student_id) >= (int)sizeof(new_students)) {
-                        // Buffer would overflow, handle error
-                        lock.l_type = F_UNLCK;
-                        fcntl(cf, F_SETLK, &lock);
-                        close(cf);
-                        return FILE_ERROR;
-                    }
-                }
-                char buf[MAX_COURSE_BUFFER]; // Increased buffer size
-                if (snprintf(buf, sizeof(buf),
-                    "%d,%s,%s,%d,%d,%d,%d,\"%s\"\n",
-                    cid, course_code, name_c, cap, enrolled+1, credits, fid, new_students) >= (int)sizeof(buf)) {
-                    // Buffer would overflow, handle error
-                    lock.l_type = F_UNLCK;
-                    fcntl(cf, F_SETLK, &lock);
-                    close(cf);
-                    return FILE_ERROR;
-                }
-                strcat(updated_courses, buf);
+        if (sscanf(line, "%d", &cid) == 1 && cid == course_id) {
+            // Update this line
+            char new_students[MAX_BUFFER];
+            if (strlen(students_raw) > 0) {
+                snprintf(new_students, sizeof(new_students), "%s,%d", students_raw, student_id);
             } else {
-                strcat(updated_courses, line);
-                strcat(updated_courses, "\n");
+                snprintf(new_students, sizeof(new_students), "%d", student_id);
             }
-        }
-    }
-    
-    // Release lock
-    lock.l_type = F_UNLCK;
-    fcntl(cf, F_SETLK, &lock);
-    close(cf);
-
-    // Write back with exclusive lock
-    cf = open(DB_COURSES, O_WRONLY | O_TRUNC);
-    if (cf < 0) return FILE_ERROR;
-    
-    // Acquire exclusive lock for writing
-    memset(&lock, 0, sizeof(lock));
-    lock.l_type = F_WRLCK;
-    lock.l_whence = SEEK_SET;
-    lock.l_start = 0;
-    lock.l_len = 0; // Lock the entire file
-    
-    if (fcntl(cf, F_SETLKW, &lock) == -1) {
-        const char *err_msg = "Failed to acquire lock on courses file\n";
-        write(STDERR_FILENO, err_msg, strlen(err_msg));
-        close(cf);
-        return FILE_ERROR;
-    }
-    
-    write(cf, updated_courses, strlen(updated_courses));
-    
-    // Release lock
-    lock.l_type = F_UNLCK;
-    fcntl(cf, F_SETLK, &lock);
-    close(cf);
-
-    // 4) Update students file
-    sf = open(DB_STUDENTS, O_RDONLY);
-    if (sf < 0) return FILE_ERROR;
-    
-    // Acquire shared lock for reading
-    memset(&lock, 0, sizeof(lock));
-    lock.l_type = F_RDLCK;
-    lock.l_whence = SEEK_SET;
-    lock.l_start = 0;
-    lock.l_len = 0; // Lock the entire file
-    
-    if (fcntl(sf, F_SETLKW, &lock) == -1) {
-        const char *err_msg = "Failed to acquire lock on students file\n";
-        write(STDERR_FILENO, err_msg, strlen(err_msg));
-        close(sf);
-        return FILE_ERROR;
-    }
-
-    char updated_students[MAX_STUDENT_BUFFER] = ""; // Increased buffer size
-    if ((bytes_read = read_line(sf, line, sizeof(line))) > 0 && strncmp(line, "id,", 3) == 0) {
-        // Check if the line already ends with a newline
-        if (line[bytes_read-1] == '\n') {
-            strcat(updated_students, line);
+            
+            fprintf(temp, "%d,%s,%s,%d,%d,%d,%d,\"%s\"\n",
+                   course_id, course_code, name_c, cap, enrolled+1, credits, fid, new_students);
         } else {
-            strcat(updated_students, line);
-            strcat(updated_students, "\n");
-        }
-    } else {
-        lseek(sf, 0, SEEK_SET);
-    }
-
-    while ((bytes_read = read_line(sf, line, sizeof(line))) > 0) {
-        line[strcspn(line, "\r\n")] = '\0';
-
-        int sid, active;
-        char name_s[64], email_s[64], pass[64], enrolled_s[MAX_BUFFER] = ""; // Increased buffer size
-        if (sscanf(line, "%d,%[^,],%[^,],%[^,],%d,%[^\n]", &sid, name_s, email_s, pass, &active, enrolled_s) >= 5) {
-            if (sid == student_id) {
-                char new_ec[MAX_BUFFER]; // Increased buffer size
-                if (strlen(enrolled_s)) {
-                    // Use safer snprintf with sufficient buffer size
-                    if (snprintf(new_ec, sizeof(new_ec), "%s,%s", enrolled_s, course_code) >= (int)sizeof(new_ec)) {
-                        // Buffer would overflow, handle error
-                        lock.l_type = F_UNLCK;
-                        fcntl(sf, F_SETLK, &lock);
-                        close(sf);
-                        return FILE_ERROR;
-                    }
-                } else {
-                    if (snprintf(new_ec, sizeof(new_ec), "%s", course_code) >= (int)sizeof(new_ec)) {
-                        // Buffer would overflow, handle error
-                        lock.l_type = F_UNLCK;
-                        fcntl(sf, F_SETLK, &lock);
-                        close(sf);
-                        return FILE_ERROR;
-                    }
-                }
-                char buf[MAX_STUDENT_BUFFER]; // Increased buffer size
-                if (snprintf(buf, sizeof(buf),
-                         "%d,%s,%s,%s,%d,%s\n",
-                         sid, name_s, email_s, pass, active, new_ec) >= (int)sizeof(buf)) {
-                    // Buffer would overflow, handle error
-                    lock.l_type = F_UNLCK;
-                    fcntl(sf, F_SETLK, &lock);
-                    close(sf);
-                    return FILE_ERROR;
-                }
-                strcat(updated_students, buf);
-            } else {
-                strcat(updated_students, line);
-                strcat(updated_students, "\n");
-            }
+            // Copy line unchanged
+            fprintf(temp, "%s", line);
         }
     }
     
+    fclose(temp);
+    
     // Release lock
     lock.l_type = F_UNLCK;
-    fcntl(sf, F_SETLK, &lock);
-    close(sf);
+    fcntl(cf, F_SETLK, &lock);
+    close(cf);
+    
+    // Replace original file with temp file
+    if (rename(temp_file, DB_COURSES) < 0) {
+        unlink(temp_file);
+        return FILE_ERROR;
+    }
 
-    // Write back with exclusive lock
-    sf = open(DB_STUDENTS, O_WRONLY | O_TRUNC);
+    // 4) Update students file - add course to student's enrolled courses
+    sf = open(DB_STUDENTS, O_RDWR);
     if (sf < 0) return FILE_ERROR;
     
     // Acquire exclusive lock for writing
@@ -552,13 +534,53 @@ static inline int enroll_course(int student_id, int course_id) {
         close(sf);
         return FILE_ERROR;
     }
+
+    char temp_student_file[] = "../database/students_temp.csv";
+    temp = fopen(temp_student_file, "w");
+    if (!temp) {
+        lock.l_type = F_UNLCK;
+        fcntl(sf, F_SETLK, &lock);
+        close(sf);
+        return FILE_ERROR;
+    }
     
-    write(sf, updated_students, strlen(updated_students));
+    // Copy header
+    lseek(sf, 0, SEEK_SET);
+    read_line(sf, line, sizeof(line));
+    fprintf(temp, "%s", line);
+    
+    // Copy all lines, updating the student
+    while (read_line(sf, line, sizeof(line)) > 0) {
+        int sid;
+        if (sscanf(line, "%d", &sid) == 1 && sid == student_id) {
+            // Update this line
+            char new_enrolled[MAX_BUFFER];
+            if (strlen(student_enrolled) > 0) {
+                snprintf(new_enrolled, sizeof(new_enrolled), "%s,%s", student_enrolled, course_code);
+            } else {
+                snprintf(new_enrolled, sizeof(new_enrolled), "%s", course_code);
+            }
+            
+            fprintf(temp, "%d,%s,%s,%s,%d,%s\n",
+                   student_id, student_name, student_email, student_pass, student_active, new_enrolled);
+        } else {
+            // Copy line unchanged
+            fprintf(temp, "%s", line);
+        }
+    }
+    
+    fclose(temp);
     
     // Release lock
     lock.l_type = F_UNLCK;
     fcntl(sf, F_SETLK, &lock);
     close(sf);
+    
+    // Replace original file with temp file
+    if (rename(temp_student_file, DB_STUDENTS) < 0) {
+        unlink(temp_student_file);
+        return FILE_ERROR;
+    }
 
     return SUCCESS;
 }
